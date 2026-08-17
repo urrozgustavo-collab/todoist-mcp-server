@@ -86,6 +86,7 @@ const TOOLS: Tool[] = [
 ];
 
 async function executeTool(name: string, args: any) {
+  console.log(`[EXEC] Tool: ${name}`, JSON.stringify(args));
   if (name === "todoist_create_task") {
     const { content, description, due_string, priority, project_id } = args || {};
     const task = await todoistClient.addTask({
@@ -162,14 +163,13 @@ function createMcpServer(): Server {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    console.log("ListTools request recibido (SSE)");
+    console.log("ListTools request recibido");
     return { tools: TOOLS };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const { name, arguments: args } = request.params;
-      console.log(`CallTool request recibido (SSE): ${name}`, args);
       return await executeTool(name, args);
     } catch (error: any) {
       return {
@@ -198,7 +198,7 @@ const transports = new Map<string, SSEServerTransport>();
 
 // Manejador SSE
 const handleSse = async (req: Request, res: Response) => {
-  console.log("Nueva conexión SSE entrante desde:", req.ip, "User-Agent:", req.get("user-agent"));
+  console.log("Nueva conexión SSE entrante...");
 
   const transport = new SSEServerTransport("/message", res);
   const server = createMcpServer();
@@ -228,26 +228,25 @@ app.get("/health", (_req: Request, res: Response) => {
   res.status(200).json({ status: "ok", service: "todoist-mcp-server" });
 });
 
-// Rutas POST (Soporta SSE Message y Streamable HTTP directo)
+// Rutas POST (Soporta SSE Message y Streamable HTTP con fallback directo)
 const handlePost = async (req: Request, res: Response) => {
   const sessionId = req.query.sessionId as string;
+  const body = req.body || {};
 
-  if (sessionId) {
-    console.log(`Mensaje POST para sesión SSE: ${sessionId}`);
-    const transport = transports.get(sessionId);
-    if (!transport) {
-      console.warn(`Sesión no encontrada: ${sessionId}`);
-      res.status(404).send("Sesión no encontrada");
+  console.log("Mensaje POST recibido:", { sessionId, method: body.method });
+
+  // Si hay un transporte SSE activo en memoria para esta sesión, lo procesamos por SSE
+  if (sessionId && transports.has(sessionId)) {
+    const transport = transports.get(sessionId)!;
+    try {
+      await transport.handlePostMessage(req, res, req.body);
       return;
+    } catch (err) {
+      console.warn("Error delegando a SSEServerTransport, procesando con fallback HTTP:", err);
     }
-    await transport.handlePostMessage(req, res, req.body);
-    return;
   }
 
-  // Manejo directo de Streamable HTTP (JSON-RPC) si no hay sessionId
-  const body = req.body || {};
-  console.log("Mensaje POST Streamable HTTP recibido:", body.method, "id:", body.id);
-
+  // Fallback directo JSON-RPC (Streamable HTTP o sesión SSE cerrada/expirada)
   if (body.method === "initialize") {
     res.json({
       jsonrpc: "2.0",
@@ -294,7 +293,12 @@ const handlePost = async (req: Request, res: Response) => {
     return;
   }
 
-  res.status(400).json({ error: "Unknown method or missing sessionId" });
+  if (body.method === "ping") {
+    res.json({ jsonrpc: "2.0", id: body.id, result: {} });
+    return;
+  }
+
+  res.status(200).json({ jsonrpc: "2.0", id: body.id, result: {} });
 };
 
 app.post("/", handlePost);
