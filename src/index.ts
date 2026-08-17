@@ -85,6 +85,76 @@ const TOOLS: Tool[] = [
   }
 ];
 
+async function executeTool(name: string, args: any) {
+  if (name === "todoist_create_task") {
+    const { content, description, due_string, priority, project_id } = args || {};
+    const task = await todoistClient.addTask({
+      content,
+      description,
+      dueString: due_string,
+      priority,
+      projectId: project_id,
+    });
+    return { content: [{ type: "text", text: `Task created: "${task.content}" (ID: ${task.id})` }] };
+  }
+
+  if (name === "todoist_get_tasks") {
+    const { project_id, filter, priority, limit = 10 } = args || {};
+    let tasks = await todoistClient.getTasks({ projectId: project_id, filter });
+    if (priority) tasks = tasks.filter((t) => t.priority === priority);
+    tasks = tasks.slice(0, limit);
+    return { content: [{ type: "text", text: JSON.stringify(tasks, null, 2) }] };
+  }
+
+  if (name === "todoist_update_task") {
+    const { task_name, content, description, due_string, priority } = args || {};
+    const tasks = await todoistClient.getTasks();
+    const task = tasks.find((t) => t.content.toLowerCase().includes(task_name.toLowerCase()));
+    if (!task) {
+      return { content: [{ type: "text", text: `Task not found: ${task_name}` }], isError: true };
+    }
+    const updated = await todoistClient.updateTask(task.id, {
+      content,
+      description,
+      dueString: due_string,
+      priority,
+    });
+    return { content: [{ type: "text", text: `Task updated: "${updated.content}"` }] };
+  }
+
+  if (name === "todoist_complete_task") {
+    const { task_name, task_id } = args || {};
+    let targetId = task_id;
+    if (!targetId && task_name) {
+      const tasks = await todoistClient.getTasks();
+      const task = tasks.find((t) => t.content.toLowerCase().includes(task_name.toLowerCase()));
+      if (!task) {
+        return { content: [{ type: "text", text: `Task not found: ${task_name}` }], isError: true };
+      }
+      targetId = task.id;
+    }
+    await todoistClient.closeTask(targetId);
+    return { content: [{ type: "text", text: `Task ${targetId} completed.` }] };
+  }
+
+  if (name === "todoist_delete_task") {
+    const { task_name, task_id } = args || {};
+    let targetId = task_id;
+    if (!targetId && task_name) {
+      const tasks = await todoistClient.getTasks();
+      const task = tasks.find((t) => t.content.toLowerCase().includes(task_name.toLowerCase()));
+      if (!task) {
+        return { content: [{ type: "text", text: `Task not found: ${task_name}` }], isError: true };
+      }
+      targetId = task.id;
+    }
+    await todoistClient.deleteTask(targetId);
+    return { content: [{ type: "text", text: `Task ${targetId} deleted.` }] };
+  }
+
+  throw new Error(`Tool not found: ${name}`);
+}
+
 function createMcpServer(): Server {
   const server = new Server(
     { name: "todoist-mcp-server", version: "1.0.0" },
@@ -92,88 +162,15 @@ function createMcpServer(): Server {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    console.log("ListTools request recibido");
+    console.log("ListTools request recibido (SSE)");
     return { tools: TOOLS };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
       const { name, arguments: args } = request.params;
-      console.log(`CallTool request recibido: ${name}`, args);
-
-      if (name === "todoist_create_task") {
-        const { content, description, due_string, priority, project_id } = args as any;
-        const task = await todoistClient.addTask({
-          content,
-          description,
-          dueString: due_string,
-          priority,
-          projectId: project_id,
-        });
-        return {
-          content: [{ type: "text", text: `Task created: "${task.content}" (ID: ${task.id})` }],
-        };
-      }
-
-      if (name === "todoist_get_tasks") {
-        const { project_id, filter, priority, limit = 10 } = (args as any) || {};
-        let tasks = await todoistClient.getTasks({ projectId: project_id, filter });
-        if (priority) tasks = tasks.filter((t) => t.priority === priority);
-        tasks = tasks.slice(0, limit);
-        return {
-          content: [{ type: "text", text: JSON.stringify(tasks, null, 2) }],
-        };
-      }
-
-      if (name === "todoist_update_task") {
-        const { task_name, content, description, due_string, priority } = args as any;
-        const tasks = await todoistClient.getTasks();
-        const task = tasks.find((t) => t.content.toLowerCase().includes(task_name.toLowerCase()));
-        if (!task) {
-          return { content: [{ type: "text", text: `Task not found: ${task_name}` }], isError: true };
-        }
-        const updated = await todoistClient.updateTask(task.id, {
-          content,
-          description,
-          dueString: due_string,
-          priority,
-        });
-        return {
-          content: [{ type: "text", text: `Task updated: "${updated.content}"` }],
-        };
-      }
-
-      if (name === "todoist_complete_task") {
-        const { task_name, task_id } = (args as any) || {};
-        let targetId = task_id;
-        if (!targetId && task_name) {
-          const tasks = await todoistClient.getTasks();
-          const task = tasks.find((t) => t.content.toLowerCase().includes(task_name.toLowerCase()));
-          if (!task) {
-            return { content: [{ type: "text", text: `Task not found: ${task_name}` }], isError: true };
-          }
-          targetId = task.id;
-        }
-        await todoistClient.closeTask(targetId);
-        return { content: [{ type: "text", text: `Task ${targetId} completed.` }] };
-      }
-
-      if (name === "todoist_delete_task") {
-        const { task_name, task_id } = (args as any) || {};
-        let targetId = task_id;
-        if (!targetId && task_name) {
-          const tasks = await todoistClient.getTasks();
-          const task = tasks.find((t) => t.content.toLowerCase().includes(task_name.toLowerCase()));
-          if (!task) {
-            return { content: [{ type: "text", text: `Task not found: ${task_name}` }], isError: true };
-          }
-          targetId = task.id;
-        }
-        await todoistClient.deleteTask(targetId);
-        return { content: [{ type: "text", text: `Task ${targetId} deleted.` }] };
-      }
-
-      throw new Error(`Tool not found: ${name}`);
+      console.log(`CallTool request recibido (SSE): ${name}`, args);
+      return await executeTool(name, args);
     } catch (error: any) {
       return {
         content: [{ type: "text", text: `Error: ${error.message || String(error)}` }],
@@ -186,17 +183,44 @@ function createMcpServer(): Server {
 }
 
 const app = express();
+app.set("trust proxy", 1);
 
 app.use(cors({
   origin: "*",
   methods: ["GET", "POST", "OPTIONS", "HEAD"],
-  allowedHeaders: ["*"]
+  allowedHeaders: ["*"],
+  exposedHeaders: ["*"]
 }));
 
 app.use(express.json());
 
-// Root endpoint
-app.get("/", (_req: Request, res: Response) => {
+const transports = new Map<string, SSEServerTransport>();
+
+// Manejador SSE
+const handleSse = async (req: Request, res: Response) => {
+  console.log("Nueva conexión SSE entrante desde:", req.ip, "User-Agent:", req.get("user-agent"));
+
+  const transport = new SSEServerTransport("/message", res);
+  const server = createMcpServer();
+
+  transports.set(transport.sessionId, transport);
+  console.log(`Sesión SSE iniciada: ${transport.sessionId}`);
+
+  transport.onclose = () => {
+    console.log(`Sesión SSE cerrada: ${transport.sessionId}`);
+    transports.delete(transport.sessionId);
+  };
+
+  await server.connect(transport);
+};
+
+// Rutas GET
+app.get("/sse", handleSse);
+
+app.get("/", (req: Request, res: Response) => {
+  if (req.headers.accept?.includes("text/event-stream")) {
+    return handleSse(req, res);
+  }
   res.status(200).send("Todoist MCP Server is running!");
 });
 
@@ -204,48 +228,79 @@ app.get("/health", (_req: Request, res: Response) => {
   res.status(200).json({ status: "ok", service: "todoist-mcp-server" });
 });
 
-const transports = new Map<string, SSEServerTransport>();
-
-// SSE Endpoint
-const handleSse = async (req: Request, res: Response) => {
-  console.log("Nueva conexión SSE entrante...");
-
-  const proto = (req.headers["x-forwarded-proto"] as string) || (req.secure ? "https" : "http") || "https";
-  const host = (req.headers["x-forwarded-host"] as string) || req.get("host");
-  // Endpoint absoluto completo para clientes MCP que requieren URL absoluta
-  const messageEndpoint = `${proto}://${host}/message`;
-
-  const transport = new SSEServerTransport(messageEndpoint, res);
-  const server = createMcpServer();
-
-  transports.set(transport.sessionId, transport);
-  console.log(`Sesión iniciada: ${transport.sessionId} -> Endpoint: ${messageEndpoint}?sessionId=${transport.sessionId}`);
-
-  transport.onclose = () => {
-    console.log(`Sesión cerrada: ${transport.sessionId}`);
-    transports.delete(transport.sessionId);
-  };
-
-  await server.connect(transport);
-};
-
-app.get("/sse", handleSse);
-
-// POST Message Endpoint (soporta tanto /message como /messages)
-const handleMessage = async (req: Request, res: Response) => {
+// Rutas POST (Soporta SSE Message y Streamable HTTP directo)
+const handlePost = async (req: Request, res: Response) => {
   const sessionId = req.query.sessionId as string;
-  console.log(`Mensaje POST recibido para sesión: ${sessionId}`);
-  const transport = transports.get(sessionId);
-  if (!transport) {
-    console.warn(`Sesión no encontrada: ${sessionId}`);
-    res.status(404).send("Sesión no encontrada");
+
+  if (sessionId) {
+    console.log(`Mensaje POST para sesión SSE: ${sessionId}`);
+    const transport = transports.get(sessionId);
+    if (!transport) {
+      console.warn(`Sesión no encontrada: ${sessionId}`);
+      res.status(404).send("Sesión no encontrada");
+      return;
+    }
+    await transport.handlePostMessage(req, res, req.body);
     return;
   }
-  await transport.handlePostMessage(req, res, req.body);
+
+  // Manejo directo de Streamable HTTP (JSON-RPC) si no hay sessionId
+  const body = req.body || {};
+  console.log("Mensaje POST Streamable HTTP recibido:", body.method, "id:", body.id);
+
+  if (body.method === "initialize") {
+    res.json({
+      jsonrpc: "2.0",
+      id: body.id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "todoist-mcp-server", version: "1.0.0" }
+      }
+    });
+    return;
+  }
+
+  if (body.method === "notifications/initialized") {
+    res.status(200).end();
+    return;
+  }
+
+  if (body.method === "tools/list") {
+    res.json({
+      jsonrpc: "2.0",
+      id: body.id,
+      result: { tools: TOOLS }
+    });
+    return;
+  }
+
+  if (body.method === "tools/call") {
+    try {
+      const { name, arguments: args } = body.params || {};
+      const result = await executeTool(name, args);
+      res.json({
+        jsonrpc: "2.0",
+        id: body.id,
+        result
+      });
+    } catch (err: any) {
+      res.json({
+        jsonrpc: "2.0",
+        id: body.id,
+        error: { code: -32603, message: err.message || String(err) }
+      });
+    }
+    return;
+  }
+
+  res.status(400).json({ error: "Unknown method or missing sessionId" });
 };
 
-app.post("/message", handleMessage);
-app.post("/messages", handleMessage);
+app.post("/", handlePost);
+app.post("/sse", handlePost);
+app.post("/message", handlePost);
+app.post("/messages", handlePost);
 
 const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, "0.0.0.0", () => {
