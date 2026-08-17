@@ -7,7 +7,6 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { TodoistApi } from "@doist/todoist-api-typescript";
 
 const API_KEY = process.env.TODOIST_API_TOKEN;
 if (!API_KEY) {
@@ -15,7 +14,38 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-const todoistClient = new TodoistApi(API_KEY);
+// Cliente HTTP nativo para Todoist API con soporte para API v1 y REST v2
+async function todoistRequest(path: string, options: any = {}) {
+  let url = `https://api.todoist.com/api/v1${path}`;
+  let res = await fetch(url, {
+    ...options,
+    headers: {
+      "Authorization": `Bearer ${API_KEY}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    }
+  });
+
+  if (res.status === 410 || res.status === 404) {
+    url = `https://api.todoist.com/rest/v2${path}`;
+    res = await fetch(url, {
+      ...options,
+      headers: {
+        "Authorization": `Bearer ${API_KEY}`,
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      }
+    });
+  }
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Todoist API error ${res.status}: ${errorText}`);
+  }
+
+  if (res.status === 204) return null;
+  return await res.json();
+}
 
 const TOOLS: Tool[] = [
   {
@@ -87,38 +117,49 @@ const TOOLS: Tool[] = [
 
 async function executeTool(name: string, args: any) {
   console.log(`[EXEC] Tool: ${name}`, JSON.stringify(args));
+
   if (name === "todoist_create_task") {
     const { content, description, due_string, priority, project_id } = args || {};
-    const task = await todoistClient.addTask({
-      content,
-      description,
-      dueString: due_string,
-      priority,
-      projectId: project_id,
+    const task = await todoistRequest("/tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        content,
+        description,
+        due_string,
+        priority,
+        project_id,
+      }),
     });
     return { content: [{ type: "text", text: `Task created: "${task.content}" (ID: ${task.id})` }] };
   }
 
   if (name === "todoist_get_tasks") {
     const { project_id, filter, priority, limit = 10 } = args || {};
-    let tasks = await todoistClient.getTasks({ projectId: project_id, filter });
-    if (priority) tasks = tasks.filter((t) => t.priority === priority);
-    tasks = tasks.slice(0, limit);
+    const params = new URLSearchParams();
+    if (project_id) params.set("project_id", project_id);
+    if (filter) params.set("filter", filter);
+    const queryString = params.toString() ? `?${params.toString()}` : "";
+    
+    let tasks: any = await todoistRequest(`/tasks${queryString}`);
+    if (Array.isArray(tasks) && priority) {
+      tasks = tasks.filter((t: any) => t.priority === priority);
+    }
+    if (Array.isArray(tasks)) {
+      tasks = tasks.slice(0, limit);
+    }
     return { content: [{ type: "text", text: JSON.stringify(tasks, null, 2) }] };
   }
 
   if (name === "todoist_update_task") {
     const { task_name, content, description, due_string, priority } = args || {};
-    const tasks = await todoistClient.getTasks();
-    const task = tasks.find((t) => t.content.toLowerCase().includes(task_name.toLowerCase()));
+    const tasks: any = await todoistRequest("/tasks");
+    const task = Array.isArray(tasks) ? tasks.find((t: any) => t.content.toLowerCase().includes(task_name.toLowerCase())) : null;
     if (!task) {
       return { content: [{ type: "text", text: `Task not found: ${task_name}` }], isError: true };
     }
-    const updated = await todoistClient.updateTask(task.id, {
-      content,
-      description,
-      dueString: due_string,
-      priority,
+    const updated = await todoistRequest(`/tasks/${task.id}`, {
+      method: "POST",
+      body: JSON.stringify({ content, description, due_string, priority }),
     });
     return { content: [{ type: "text", text: `Task updated: "${updated.content}"` }] };
   }
@@ -127,14 +168,14 @@ async function executeTool(name: string, args: any) {
     const { task_name, task_id } = args || {};
     let targetId = task_id;
     if (!targetId && task_name) {
-      const tasks = await todoistClient.getTasks();
-      const task = tasks.find((t) => t.content.toLowerCase().includes(task_name.toLowerCase()));
+      const tasks: any = await todoistRequest("/tasks");
+      const task = Array.isArray(tasks) ? tasks.find((t: any) => t.content.toLowerCase().includes(task_name.toLowerCase())) : null;
       if (!task) {
         return { content: [{ type: "text", text: `Task not found: ${task_name}` }], isError: true };
       }
       targetId = task.id;
     }
-    await todoistClient.closeTask(targetId);
+    await todoistRequest(`/tasks/${targetId}/close`, { method: "POST" });
     return { content: [{ type: "text", text: `Task ${targetId} completed.` }] };
   }
 
@@ -142,14 +183,14 @@ async function executeTool(name: string, args: any) {
     const { task_name, task_id } = args || {};
     let targetId = task_id;
     if (!targetId && task_name) {
-      const tasks = await todoistClient.getTasks();
-      const task = tasks.find((t) => t.content.toLowerCase().includes(task_name.toLowerCase()));
+      const tasks: any = await todoistRequest("/tasks");
+      const task = Array.isArray(tasks) ? tasks.find((t: any) => t.content.toLowerCase().includes(task_name.toLowerCase())) : null;
       if (!task) {
         return { content: [{ type: "text", text: `Task not found: ${task_name}` }], isError: true };
       }
       targetId = task.id;
     }
-    await todoistClient.deleteTask(targetId);
+    await todoistRequest(`/tasks/${targetId}`, { method: "DELETE" });
     return { content: [{ type: "text", text: `Task ${targetId} deleted.` }] };
   }
 
@@ -235,7 +276,6 @@ const handlePost = async (req: Request, res: Response) => {
 
   console.log("Mensaje POST recibido:", { sessionId, method: body.method });
 
-  // Si hay un transporte SSE activo en memoria para esta sesión, lo procesamos por SSE
   if (sessionId && transports.has(sessionId)) {
     const transport = transports.get(sessionId)!;
     try {
@@ -246,7 +286,6 @@ const handlePost = async (req: Request, res: Response) => {
     }
   }
 
-  // Fallback directo JSON-RPC (Streamable HTTP o sesión SSE cerrada/expirada)
   if (body.method === "initialize") {
     res.json({
       jsonrpc: "2.0",
