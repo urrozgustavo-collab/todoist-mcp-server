@@ -186,8 +186,18 @@ function createMcpServer(): Server {
 const app = express();
 app.use(cors());
 
+// Root and Healthcheck endpoints for Render health checks
+app.get("/", (_req: Request, res: Response) => {
+  res.status(200).send("Todoist MCP Server is running!");
+});
+
+app.get("/health", (_req: Request, res: Response) => {
+  res.status(200).json({ status: "ok", service: "todoist-mcp-server" });
+});
+
 const transports = new Map<string, SSEServerTransport>();
 
+// SSE Endpoint
 app.get("/sse", async (req: Request, res: Response) => {
   console.log("Nueva conexión SSE entrante...");
   const transport = new SSEServerTransport("/message", res);
@@ -203,6 +213,7 @@ app.get("/sse", async (req: Request, res: Response) => {
   await server.connect(transport);
 });
 
+// POST Message Endpoint
 app.post("/message", async (req: Request, res: Response) => {
   const sessionId = req.query.sessionId as string;
   const transport = transports.get(sessionId);
@@ -211,10 +222,6 @@ app.post("/message", async (req: Request, res: Response) => {
     return;
   }
   await transport.handlePostMessage(req, res);
-});
-
-app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok", service: "todoist-mcp-server" });
 });
 
 const PORT = Number(process.env.PORT) || 3000;
